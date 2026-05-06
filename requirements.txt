@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 sentence-transformers
 scikit-learn
+transformers
 python-dotenv
 apscheduler
 psycopg2

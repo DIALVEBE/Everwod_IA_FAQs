@@ -37,6 +37,10 @@ class EncodeResponse(BaseModel):
 class SuggestionResponse(BaseModel):
     # Identificador unico para validar la sugerencia mas adelante.
     id: str
+    # Empresa a la que pertenece la sugerencia.
+    company_id: str
+    # Nombre de empresa si pudo extraerse desde la base de datos.
+    company_name: Optional[str] = None
     # Pregunta representativa del grupo de conversaciones similares.
     question: str
     # Respuesta sugerida segun las respuestas historicas del asistente.
@@ -51,6 +55,8 @@ class SuggestionResponse(BaseModel):
 
 # Resumen completo de la ejecucion del servicio de sugerencias.
 class SuggestionSummary(BaseModel):
+    # Numero de empresas analizadas en la ejecucion.
+    company_count: int
     # Numero total de grupos detectados.
     cluster_count: int
     # Cantidad de textos usados para generar los clusters.

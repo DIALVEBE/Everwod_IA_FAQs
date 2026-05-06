@@ -81,9 +81,17 @@ DB_USER=postgres
 DB_PASSWORD=<tu_password>
 DB_HOST=localhost
 DB_PORT=5432
+
+# Opcional: modelo local para redactar respuestas sugeridas.
+FAQ_LLM_ENABLED=true
+FAQ_LLM_MODEL=Qwen/Qwen2.5-0.5B-Instruct
+FAQ_CLUSTER_EPS=0.34
+FAQ_MIN_CLUSTER_SIZE=3
+FAQ_SKIP_EXISTING=true
+FAQ_DUPLICATE_THRESHOLD=0.78
 ```
 
-Estas variables son usadas por `test_connection.py` y por `faq_common.py`.
+Estas variables son usadas por `test_connection.py`, `faq_common.py` y `suggestion_service.py`.
 
 ## 4. Verificar que PostgreSQL este activo
 
@@ -210,9 +218,13 @@ Despues se crea el servicio que genera sugerencias.
 Responsabilidad:
 
 - Leer `data/conversations.jsonl`.
+- Separar conversaciones por empresa usando `company_id`.
 - Generar embeddings.
-- Agrupar preguntas parecidas con KMeans.
+- Agrupar preguntas parecidas por empresa con DBSCAN, descartando ruido conversacional.
+- Comparar contra `agent_faqs` por empresa para evitar sugerir FAQs duplicadas.
+- Redactar datos personales como nombres, correos y telefonos antes de exponer respuestas o ejemplos.
 - Escoger preguntas representativas.
+- Redactar respuestas sugeridas con un modelo local tipo Qwen cuando esta habilitado.
 - Guardar resultados en `data/faq_suggestions.json`.
 
 Puerto usado:
@@ -254,8 +266,8 @@ Responsabilidad:
 En una terminal:
 
 ```bash
-cd /home/alejandro/Descargas/Archivos
-source .venv/bin/activate
+cd /home/alejandro/Documentos/GenAI/Everwod_IA_FAQs
+source venv/bin/activate
 ```
 
 ### 2. Iniciar los servicios
@@ -265,7 +277,8 @@ Abrir 3 terminales separadas y ejecutar:
 Terminal 1:
 
 ```bash
-source /home/alejandro/Descargas/Archivos/.venv/bin/activate
+cd /home/alejandro/Documentos/GenAI/Everwod_IA_FAQs
+source venv/bin/activate
 python3 ingest_service.py
 ```
 
@@ -278,7 +291,8 @@ INFO:     Uvicorn running on http://127.0.0.1:8001
 Terminal 2:
 
 ```bash
-source /home/alejandro/Descargas/Archivos/.venv/bin/activate
+cd /home/alejandro/Documentos/GenAI/Everwod_IA_FAQs
+source venv/bin/activate
 python3 suggestion_service.py
 ```
 
@@ -288,10 +302,13 @@ Debería mostrar:
 INFO:     Uvicorn running on http://127.0.0.1:8003
 ```
 
+Nota: si `FAQ_LLM_ENABLED=true`, el primer arranque puede tardar mientras se descarga o carga `Qwen/Qwen2.5-0.5B-Instruct`. Si el modelo no carga, el servicio sigue funcionando con fallback a respuestas historicas.
+
 Terminal 3:
 
 ```bash
-source /home/alejandro/Descargas/Archivos/.venv/bin/activate
+cd /home/alejandro/Documentos/GenAI/Everwod_IA_FAQs
+source venv/bin/activate
 python3 validation_service.py
 ```
 
@@ -340,8 +357,15 @@ Enviar y verificar esta respuesta:
 {
   "status": "ok",
   "service": "suggestion",
-  "model": "all-MiniLM-L6-v2"
+  "embedding_model": "all-MiniLM-L6-v2",
+  "answer_model": "Qwen/Qwen2.5-0.5B-Instruct"
 }
+```
+
+Si Qwen no pudo cargarse o se ejecuta con `FAQ_LLM_ENABLED=false`, `answer_model` puede aparecer como:
+
+```json
+"historical_fallback"
 ```
 
 Request 3: `Health Validation`
@@ -370,7 +394,7 @@ Body > raw > JSON:
 
 ```json
 {
-  "limit": 15000,
+  "limit": 1000,
   "since_days": 90
 }
 ```
@@ -379,12 +403,12 @@ Enviar y verificar una respuesta como esta:
 
 ```json
 {
-  "imported_records": 15000,
-  "output_file": "/home/alejandro/Descargas/Archivos/data/conversations.jsonl"
+  "imported_records": 460,
+  "output_file": "/home/alejandro/Documentos/GenAI/Everwod_IA_FAQs/data/conversations.jsonl"
 }
 ```
 
-Nota: en el código actual `output_file` devuelve la ruta completa del archivo. `imported_records` puede ser menor que `15000` si hay menos pares usuario/asistente disponibles en los últimos 90 días.
+Nota: en el código actual `output_file` devuelve la ruta completa del archivo. `imported_records` puede ser menor que `limit` porque se guardan pares usuario/asistente, no mensajes individuales. Cada registro queda asociado a `company_id` y `company_name`.
 
 ### 6. Generar sugerencias de FAQ
 
@@ -395,32 +419,41 @@ Request: `POST Suggest`
 - Headers: `Content-Type: application/json`
 - Body: vacío
 
-Enviar la request. Puede tardar unos segundos mientras procesa embeddings y clustering.
+Enviar la request. Puede tardar mientras procesa embeddings, clustering y, si esta habilitado, generacion local con Qwen.
 
 Verificar una respuesta con esta estructura:
 
 ```json
 {
-  "cluster_count": 12,
-  "total_examples": 15000,
-  "average_cluster_size": 1250.0,
-  "silhouette_score": 0.1234,
+  "company_count": 4,
+  "cluster_count": 2,
+  "total_examples": 31,
+  "average_cluster_size": 15.5,
+  "silhouette_score": null,
   "suggestions": [
     {
       "id": "COPIAR_ESTE_ID",
-      "question": "Pregunta representativa",
-      "answer": "Respuesta sugerida",
-      "cluster_size": 100,
+      "company_id": "74",
+      "company_name": "Empire Box Cf",
+      "question": "Quiero reservar una clase de cortesía",
+      "answer": "Respuesta sugerida basada en conversaciones de la misma empresa",
+      "cluster_size": 6,
       "support_examples": [
-        "Ejemplo de pregunta real"
+        "Quiero reservar una clase de cortesía",
+        "Quiero empezar a entrenar con Uds, puedo agendar",
+        "Si saber si la clase queda reservada para ellos o no?"
       ],
-      "cluster_score": 0.67
+      "cluster_score": 33.33
     }
   ]
 }
 ```
 
-Los valores de `cluster_count`, `total_examples`, `average_cluster_size`, `silhouette_score`, `cluster_size` y `cluster_score` pueden cambiar según los datos procesados.
+Los valores de `company_count`, `cluster_count`, `total_examples`, `average_cluster_size`, `silhouette_score`, `cluster_size` y `cluster_score` pueden cambiar segun el rango de fechas, el limite usado y los ajustes `FAQ_CLUSTER_EPS` / `FAQ_MIN_CLUSTER_SIZE`.
+
+Importante: `total_examples` representa candidatos reales a FAQ despues de filtrar saludos, respuestas cortas, PII, mensajes conversacionales y preguntas operativas sobre usuarios/personas agendadas. Por eso normalmente sera menor que `imported_records`.
+
+Antes de guardar una sugerencia, el servicio revisa `agent_faqs` para la misma empresa. Si la pregunta sugerida es semanticamente parecida a una FAQ existente, no la incluye en la respuesta.
 
 ### 7. Consultar sugerencias generadas
 
@@ -431,11 +464,12 @@ Request: `GET Suggestions`
 
 Enviar y verificar que la respuesta sea un JSON con:
 
+- `company_count`
 - `cluster_count`
 - `total_examples`
 - `suggestions`
 
-La propiedad `suggestions` debe ser una lista de FAQs sugeridas. Copiar un `id` real de esa lista para usarlo como `suggestion_id` en el siguiente paso.
+La propiedad `suggestions` debe ser una lista de FAQs sugeridas. Cada sugerencia debe incluir `company_id` y `company_name`; esto confirma que no se estan mezclando empresas. Copiar un `id` real de esa lista para usarlo como `suggestion_id` en el siguiente paso.
 
 ### 8. Validar una sugerencia
 

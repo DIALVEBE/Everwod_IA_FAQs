@@ -25,12 +25,14 @@ def fetch_conversation_records(limit: int = 15000, since_days: int = 90) -> List
     """Consulta PostgreSQL y arma pares usuario/asistente listos para analizar."""
     since = datetime.utcnow() - timedelta(days=since_days)
 
-    # Consulta mensajes recientes ordenados por conversacion y fecha.
+    # Consulta mensajes recientes ordenados por empresa, conversacion y fecha.
     query = (
-        "SELECT agent_chat_id, message, created_at "
-        "FROM chat_messages "
-        "WHERE created_at >= %s "
-        "ORDER BY agent_chat_id, created_at "
+        "SELECT cm.agent_chat_id, cm.message, cm.created_at, ac.workspace_id, w.name "
+        "FROM chat_messages cm "
+        "JOIN agent_chats ac ON ac.id = cm.agent_chat_id "
+        "LEFT JOIN workspaces w ON w.id = ac.workspace_id "
+        "WHERE cm.created_at >= %s "
+        "ORDER BY ac.workspace_id, cm.agent_chat_id, cm.created_at "
         "LIMIT %s"
     )
 
@@ -47,10 +49,14 @@ def fetch_conversation_records(limit: int = 15000, since_days: int = 90) -> List
         agent_chat_id = row[0]
         message_json = row[1]
         created_at = row[2]
+        workspace_id = row[3]
+        workspace_name = row[4]
         messages_by_chat[agent_chat_id].append(
             {
                 "message": message_json,
                 "created_at": created_at,
+                "company_id": str(workspace_id) if workspace_id is not None else "unknown",
+                "company_name": workspace_name,
             }
         )
 
@@ -68,6 +74,8 @@ def fetch_conversation_records(limit: int = 15000, since_days: int = 90) -> List
             elif role == "assistant" and last_user_text:
                 conversations.append(
                     {
+                        "company_id": event["company_id"],
+                        "company_name": event["company_name"],
                         "conversation_id": str(conversation_id),
                         "user_text": last_user_text,
                         "assistant_text": text,
